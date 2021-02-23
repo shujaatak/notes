@@ -414,42 +414,40 @@
   - 程序层面
 
     ```cpp
+    using ShouldAppsUseDarkModePFN = BOOL(WINAPI *)();
+    static ShouldAppsUseDarkModePFN pfnShouldAppsUseDarkMode = nullptr;
+
+    using ShouldSystemUseDarkModePFN = BOOL(WINAPI *)();
+    static ShouldSystemUseDarkModePFN pfnShouldSystemUseDarkMode = nullptr;
+
+    const HMODULE UxThemeDll = LoadLibraryW(L"UxTheme.dll");
+    if (UxThemeDll) {
+        pfnShouldAppsUseDarkMode = reinterpret_cast<ShouldAppsUseDarkModePFN>(GetProcAddress(UxThemeDll, MAKEINTRESOURCEA(132)));
+        pfnShouldSystemUseDarkMode = reinterpret_cast<ShouldSystemUseDarkModePFN>(GetProcAddress(UxThemeDll, MAKEINTRESOURCEA(138)));
+        FreeLibrary(UxThemeDll);
+    }
+
     enum : WORD {
-        DwmwaUseImmersiveDarkMode = 20,
-        DwmwaUseImmersiveDarkModeBefore20h1 = 19
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20,
+        DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19
     };
 
-    static inline bool shouldApplyDarkFrame(const QWindow *w) {
-        return w->isTopLevel() && !w->flags().testFlag(Qt::FramelessWindowHint);
-    }
-
-    static bool queryDarkBorder(HWND hwnd) {
+    static inline bool isDarkBorderEnabled(const HWND hwnd) {
         BOOL result = FALSE;
-        const bool ok =
-            SUCCEEDED(DwmGetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, &result, sizeof(result)))
-            || SUCCEEDED(DwmGetWindowAttribute(hwnd, DwmwaUseImmersiveDarkModeBefore20h1, &result, sizeof(result)));
-        if (!ok)
-            qWarning("%s: Unable to retrieve dark window border setting.", __FUNCTION__);
-        return result == TRUE;
+        return SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &result, sizeof(result))) || SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &result, sizeof(result)));
     }
 
-    bool QWindowsWindow::setDarkBorderToWindow(HWND hwnd, bool d) {
-        const BOOL darkBorder = d ? TRUE : FALSE;
-        const bool ok =
-            SUCCEEDED(DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, &darkBorder, sizeof(darkBorder)))
-            || SUCCEEDED(DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkModeBefore20h1, &darkBorder, sizeof(darkBorder)));
-        if (!ok)
-            qWarning("%s: Unable to set dark window border.", __FUNCTION__);
-        return ok;
-    }
-
-    void QWindowsWindow::setDarkBorder(bool d) {
-        if (shouldApplyDarkFrame(window()) && queryDarkBorder(m_data.hwnd) != d)
-            setDarkBorderToWindow(m_data.hwnd, d);
+    static inline bool setDarkBorderEnabled(const HWND hwnd, const bool enable = true) {
+        const BOOL darkBorder = enable ? TRUE : FALSE;
+        return SUCCEEDED(DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkBorder, sizeof(darkBorder))) || SUCCEEDED(DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &darkBorder, sizeof(darkBorder)));
     }
     ```
 
-    注意：调用`DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, &darkBorder, sizeof(darkBorder))`这个API的作用是将系统标题栏和窗口边框（以及部分系统标准控件，例如滚动条等）更改为深色/浅色主题的样式（但自绘的任何控件均不会被影响，例如Qt的各种Widget基本都是自绘的，所以不会被系统主题所影响，只能使用QSS统一修改样式），但窗口内部各个控件/元素的颜色不会被修改，需要这个程序的开发者自行编写一个与之相匹配的主题调色板。因此，无边框程序执行此API无效。
+    注意
+
+    - 调用`DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkBorder, sizeof(darkBorder))`这个API的作用是将系统标题栏和窗口边框（以及部分系统标准控件，例如滚动条等）更改为深色/浅色主题的样式（但自绘的任何控件均不会被影响，例如Qt的各种Widget基本都是自绘的，所以不会被系统主题所影响，只能使用QSS统一修改样式），但窗口内部各个控件/元素的颜色不会被修改，需要这个程序的开发者自行编写一个与之相匹配的主题调色板。因此，无边框程序执行此API无效。
+    - `ShouldAppsUseDarkMode`这个API在最新版的Windows上已经失效，可以使用`ShouldSystemUseDarkMode`这个API代替。
+    - 可以通过监听`WM_SETTINGCHANGE`这个消息来获取系统是否已经切换了深色/浅色主题。
 
 - 获取系统是否开启了“透明效果”
 
@@ -900,11 +898,11 @@
                   QVersionNumber ver = QVersionNumber::fromString(newValue);
                   auto *pFixedInfo = reinterpret_cast<VS_FIXEDFILEINFO *>(lpFixedBuf);
                   if (valueName.contains("fileversion", Qt::CaseInsensitive)) {
-                      pFixedInfo->dwFileVersionMS = DWORD(ver.majorVersion());
-                      pFixedInfo->dwFileVersionLS = DWORD(ver.minorVersion());
+                      pFixedInfo->dwFileVersionMS = DWORD((ver.majorVersion() << 48) | ((ver.minorVersion() & 0xFFFF) << 32));
+                      pFixedInfo->dwFileVersionLS = DWORD(((ver.microVersion() & 0xFFFF) << 16) | (0 & 0xFFFF));
                   } else {
-                      pFixedInfo->dwProductVersionMS = DWORD(ver.majorVersion());
-                      pFixedInfo->dwProductVersionLS = DWORD(ver.minorVersion());
+                      pFixedInfo->dwProductVersionMS = DWORD((ver.majorVersion() << 48) | ((ver.minorVersion() & 0xFFFF) << 32));
+                      pFixedInfo->dwProductVersionLS = DWORD(((ver.microVersion() & 0xFFFF) << 16) | (0 & 0xFFFF));
                   }
               } else {
                   qWarning() << "Cannot query version info";
@@ -1929,22 +1927,792 @@
 - 判断系统版本：引入`VersionHelpers.h`（来自Windows SDK）后你会发现惊喜
 - Windows版本号收录
 
-  | 版本号 | 系统 |
-  | --- | --- |
-  | 6.0.6000 | Windows Vista |
-  | 6.0.6001 | Windows Vista with Service Pack 1 or Windows Server 2008 |
-  | 6.1.7600 | Windows 7 or Windows Server 2008 R2 |
-  | 6.1.7601 | Windows 7 with Service Pack 1 or Windows Server 2008 R2 with Service Pack 1 |
-  | 6.2.9200 | Windows 8 or Windows Server 2012 |
-  | 6.3.9200 | Windows 8.1 or Windows Server 2012 R2 |
-  | 6.3.9600 | Windows 8.1 with Update 1 |
-  | 10.0.10240 | Windows 10 Version 1507 |
-  | 10.0.10586 | Windows 10 Version 1511 (November Update) |
-  | 10.0.14393 | Windows 10 Version 1607 (Anniversary Update) or Windows Server 2016 |
-  | 10.0.15063 | Windows 10 Version 1703 (Creators Update) |
-  | 10.0.16299 | Windows 10 Version 1709 (Fall Creators Update) |
-  | 10.0.17134 | Windows 10 Version 1803 (April 2018 Update) |
-  | 10.0.17763 | Windows 10 Version 1809 (October 2018 Update) or Windows Server 2019 |
-  | 10.0.18362 | Windows 10 Version 1903 (May 2019 Update) |
-  | 10.0.18363 | Windows 10 Version 1909 (November 2019 Update) |
-  | 10.0.19041 | Windows 10 Version 2004 (May 2020 Update) |
+  | 版本号 | 公开名称 | 开发代号 |
+  | --- | --- | --- |
+  | 6.0.6000 | Windows Vista | - |
+  | 6.0.6001 | Windows Vista with Service Pack 1 or Windows Server 2008 | - |
+  | 6.1.7600 | Windows 7 or Windows Server 2008 R2 | - |
+  | 6.1.7601 | Windows 7 with Service Pack 1 or Windows Server 2008 R2 with Service Pack 1 | - |
+  | 6.2.9200 | Windows 8 or Windows Server 2012 | - |
+  | 6.3.9200 | Windows 8.1 or Windows Server 2012 R2 | - |
+  | 6.3.9600 | Windows 8.1 with Update 1 | - |
+  | 10.0.10240 | Windows 10 Version 1507 | TH1 |
+  | 10.0.10586 | Windows 10 Version 1511 (November Update) | TH2 |
+  | 10.0.14393 | Windows 10 Version 1607 (Anniversary Update) or Windows Server 2016 | RS1 |
+  | 10.0.15063 | Windows 10 Version 1703 (Creators Update) | RS2 |
+  | 10.0.16299 | Windows 10 Version 1709 (Fall Creators Update) | RS3 |
+  | 10.0.17134 | Windows 10 Version 1803 (April 2018 Update) | RS4 |
+  | 10.0.17763 | Windows 10 Version 1809 (October 2018 Update) or Windows Server 2019 | RS5 |
+  | 10.0.18362 | Windows 10 Version 1903 (May 2019 Update) | 19H1 |
+  | 10.0.18363 | Windows 10 Version 1909 (November 2019 Update) | 19H2 |
+  | 10.0.19041 | Windows 10 Version 2004 (May 2020 Update) | 20H1 |
+  | 10.0.19042 | Windows 10 Version 20H2 (October 2020 Update) | 20H2 |
+
+- 使用Win32 API获取系统常见文件夹的路径
+
+  ```cpp
+  QString Utils::expandConstant(const QString &value)
+  {
+      QString str = value;
+      if (str.contains(QRegularExpression(QString::fromUtf8(R"(\{auto[a-zA-Z]*\d*\})")))) {
+          str.replace(QString::fromUtf8("{auto"),
+                      isAdminProcess() ? QString::fromUtf8("{common") : QString::fromUtf8("{user"),
+                      Qt::CaseInsensitive);
+          return expandConstant(str);
+      }
+      //str.replace(QString::fromUtf8("{app}"), QString::fromUtf8(""), Qt::CaseInsensitive);
+      if (str.contains(QString::fromUtf8("{win}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Windows, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{win}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{sys}"), Qt::CaseInsensitive)
+          || str.contains(QString::fromUtf8("{sysnative}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_System, KF_FLAG_DEFAULT, nullptr, &path))) {
+              const QString qstr = QString::fromWCharArray(path);
+              str.replace(QString::fromUtf8("{sys}"), qstr, Qt::CaseInsensitive);
+              str.replace(QString::fromUtf8("{sysnative}"), qstr, Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{syswow64}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_SystemX86, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{syswow64}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      str.replace(QString::fromUtf8("{src}"),
+                  QDir::toNativeSeparators(QCoreApplication::applicationDirPath()),
+                  Qt::CaseInsensitive);
+      str.replace(QString::fromUtf8("{sd}"),
+                  qEnvironmentVariable("SystemDrive", QString::fromUtf8("C:")),
+                  Qt::CaseInsensitive);
+      if (str.contains(QString::fromUtf8("{commonpf}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commonpf}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commonpf32}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_ProgramFilesX86, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commonpf32}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commonpf64}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_ProgramFilesX64, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commonpf64}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commoncf}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_ProgramFilesCommon, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commoncf}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commoncf32}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFilesCommonX86,
+                                             KF_FLAG_DEFAULT,
+                                             nullptr,
+                                             &path))) {
+              str.replace(QString::fromUtf8("{commoncf32}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commoncf64}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFilesCommonX64,
+                                             KF_FLAG_DEFAULT,
+                                             nullptr,
+                                             &path))) {
+              str.replace(QString::fromUtf8("{commoncf64}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{tmp}"), Qt::CaseInsensitive)) {
+          const DWORD bufferSize = BUFFER_SIZE;
+          auto path = new WCHAR[bufferSize];
+          if (GetTempPathW(bufferSize, path)) {
+              for (int i = bufferSize; i != 0; --i) {
+                  if ((path[i] == '\\') || (path[i] == '/')) {
+                      path[i] = '\0';
+                      break;
+                  }
+              }
+              str.replace(QString::fromUtf8("{tmp}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              delete[] path;
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{fonts}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Fonts, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{fonts}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      //str.replace(QString::fromUtf8("{group}"), QString::fromUtf8(""), Qt::CaseInsensitive);
+      if (str.contains(QString::fromUtf8("{localappdata}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{localappdata}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userappdata}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userappdata}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commonappdata}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramData, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commonappdata}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{usercf}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_UserProgramFilesCommon,
+                                             KF_FLAG_DEFAULT,
+                                             nullptr,
+                                             &path))) {
+              str.replace(QString::fromUtf8("{usercf}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userdesktop}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userdesktop}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commondesktop}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_PublicDesktop, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commondesktop}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userdocs}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userdocs}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commondocs}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_PublicDocuments, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commondocs}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userfavorites}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Favorites, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userfavorites}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userpf}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_UserProgramFiles, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userpf}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userprograms}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Programs, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userprograms}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commonprograms}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_CommonPrograms, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commonprograms}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{usersavedgames}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_SavedGames, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{usersavedgames}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{usersendto}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_SendTo, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{usersendto}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userstartmenu}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_StartMenu, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userstartmenu}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commonstartmenu}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_CommonStartMenu, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commonstartmenu}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{userstartup}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Startup, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{userstartup}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commonstartup}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_CommonStartup, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commonstartup}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{usertemplates}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Templates, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{usertemplates}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      if (str.contains(QString::fromUtf8("{commontemplates}"), Qt::CaseInsensitive)) {
+          LPWSTR path = nullptr;
+          if (SUCCEEDED(
+                  SHGetKnownFolderPath(FOLDERID_CommonTemplates, KF_FLAG_DEFAULT, nullptr, &path))) {
+              str.replace(QString::fromUtf8("{commontemplates}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              CoTaskMemFree(path);
+          } else {
+              // TODO
+          }
+      }
+      str.replace(QString::fromUtf8("{cmd}"),
+                  qEnvironmentVariable("ComSpec", QString::fromUtf8(R"(C:\Windows\System32\cmd.exe)")),
+                  Qt::CaseInsensitive);
+      if (str.contains(QString::fromUtf8("{computername}"), Qt::CaseInsensitive)) {
+          DWORD bufferSize = BUFFER_SIZE;
+          auto path = new WCHAR[bufferSize];
+          if (GetComputerNameW(path, &bufferSize)) {
+              str.replace(QString::fromUtf8("{computername}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              delete[] path;
+          } else {
+              // TODO
+          }
+      }
+      //str.replace(QString::fromUtf8("{groupname}"), QString::fromUtf8(""), Qt::CaseInsensitive);
+      //str.replace(QString::fromUtf8("{hwnd}"), QString::fromUtf8(""), Qt::CaseInsensitive);
+      //str.replace(QString::fromUtf8("{wizardhwnd}"), QString::fromUtf8(""), Qt::CaseInsensitive);
+      //str.replace(QString::fromUtf8("{language}"), QString::fromUtf8(""), Qt::CaseInsensitive);
+      str.replace(QString::fromUtf8("{srcexe}"),
+                  QDir::toNativeSeparators(QCoreApplication::applicationFilePath()),
+                  Qt::CaseInsensitive);
+      //str.replace(QString::fromUtf8("{uninstallexe}"), QString::fromUtf8(""), Qt::CaseInsensitive);
+      if (str.contains(QString::fromUtf8("{username}"), Qt::CaseInsensitive)) {
+          DWORD bufferSize = BUFFER_SIZE;
+          auto path = new WCHAR[bufferSize];
+          if (GetUserNameW(path, &bufferSize)) {
+              str.replace(QString::fromUtf8("{username}"),
+                          QString::fromWCharArray(path),
+                          Qt::CaseInsensitive);
+              delete[] path;
+          } else {
+              // TODO
+          }
+      }
+      return str;
+  }
+  ```
+
+- 字符串转换
+  - 从`char *`
+
+    ```cpp
+    // convert_from_char.cpp
+    // compile with: /clr /link comsuppw.lib
+
+    #include <iostream>
+    #include <stdlib.h>
+    #include <string>
+
+    #include "atlbase.h"
+    #include "atlstr.h"
+    #include "comutil.h"
+
+    using namespace std;
+    using namespace System;
+
+    int main()
+    {
+        // Create and display a C style string, and then use it
+        // to create different kinds of strings.
+        char *orig = "Hello, World!";
+        cout << orig << " (char *)" << endl;
+
+        // newsize describes the length of the
+        // wchar_t string called wcstring in terms of the number
+        // of wide characters, not the number of bytes.
+        size_t newsize = strlen(orig) + 1;
+
+        // The following creates a buffer large enough to contain
+        // the exact number of characters in the original string
+        // in the new format. If you want to add more characters
+        // to the end of the string, increase the value of newsize
+        // to increase the size of the buffer.
+        wchar_t * wcstring = new wchar_t[newsize];
+
+        // Convert char* string to a wchar_t* string.
+        size_t convertedChars = 0;
+        mbstowcs_s(&convertedChars, wcstring, newsize, orig, _TRUNCATE);
+        // Display the result and indicate the type of string that it is.
+        wcout << wcstring << _T(" (wchar_t *)") << endl;
+
+        // Convert the C style string to a _bstr_t string.
+        _bstr_t bstrt(orig);
+        // Append the type of string to the new string
+        // and then display the result.
+        bstrt += " (_bstr_t)";
+        cout << bstrt << endl;
+
+        // Convert the C style string to a CComBSTR string.
+        CComBSTR ccombstr(orig);
+        if (ccombstr.Append(_T(" (CComBSTR)")) == S_OK)
+        {
+            CW2A printstr(ccombstr);
+            cout << printstr << endl;
+        }
+
+        // Convert the C style string to a CStringA and display it.
+        CStringA cstringa(orig);
+        cstringa += " (CStringA)";
+        cout << cstringa << endl;
+
+        // Convert the C style string to a CStringW and display it.
+        CStringW cstring(orig);
+        cstring += " (CStringW)";
+        // To display a CStringW correctly, use wcout and cast cstring
+        // to (LPCTSTR).
+        wcout << (LPCTSTR)cstring << endl;
+
+        // Convert the C style string to a basic_string and display it.
+        string basicstring(orig);
+        basicstring += " (basic_string)";
+        cout << basicstring << endl;
+
+        // Convert the C style string to a System::String and display it.
+        String ^systemstring = gcnew String(orig);
+        systemstring += " (System::String)";
+        Console::WriteLine("{0}", systemstring);
+        delete systemstring;
+    }
+    ```
+
+  - 从`wchar_t *`
+
+    ```cpp
+    // convert_from_wchar_t.cpp
+    // compile with: /clr /link comsuppw.lib
+
+    #include <iostream>
+    #include <stdlib.h>
+    #include <string>
+
+    #include "atlbase.h"
+    #include "atlstr.h"
+    #include "comutil.h"
+
+    using namespace std;
+    using namespace System;
+
+    int main()
+    {
+        // Create a string of wide characters, display it, and then
+        // use this string to create other types of strings.
+        wchar_t *orig = _T("Hello, World!");
+        wcout << orig << _T(" (wchar_t *)") << endl;
+
+        // Convert the wchar_t string to a char* string. Record
+        // the length of the original string and add 1 to it to
+        // account for the terminating null character.
+        size_t origsize = wcslen(orig) + 1;
+        size_t convertedChars = 0;
+
+        // Use a multibyte string to append the type of string
+        // to the new string before displaying the result.
+        char strConcat[] = " (char *)";
+        size_t strConcatsize = (strlen( strConcat ) + 1)*2;
+
+        // Allocate two bytes in the multibyte output string for every wide
+        // character in the input string (including a wide character
+        // null). Because a multibyte character can be one or two bytes,
+        // you should allot two bytes for each character. Having extra
+        // space for the new string is not an error, but having
+        // insufficient space is a potential security problem.
+        const size_t newsize = origsize*2;
+        // The new string will contain a converted copy of the original
+        // string plus the type of string appended to it.
+        char *nstring = new char[newsize+strConcatsize];
+
+        // Put a copy of the converted string into nstring
+        wcstombs_s(&convertedChars, nstring, newsize, orig, _TRUNCATE);
+        // append the type of string to the new string.
+        _mbscat_s((unsigned char*)nstring, newsize+strConcatsize, (unsigned char*)strConcat);
+        // Display the result.
+        cout << nstring << endl;
+
+        // Convert a wchar_t to a _bstr_t string and display it.
+        _bstr_t bstrt(orig);
+        bstrt += " (_bstr_t)";
+        cout << bstrt << endl;
+
+        // Convert the wchar_t string to a BSTR wide character string
+        // by using the ATL CComBSTR wrapper class for BSTR strings.
+        // Then display the result.
+
+        CComBSTR ccombstr(orig);
+        if (ccombstr.Append(_T(" (CComBSTR)")) == S_OK)
+        {
+            // CW2A converts the string in ccombstr to a multibyte
+            // string in printstr, used here for display output.
+            CW2A printstr(ccombstr);
+            cout << printstr << endl;
+            // The following line of code is an easier way to
+            // display wide character strings:
+            wcout << (LPCTSTR) ccombstr << endl;
+        }
+
+        // Convert a wide wchar_t string to a multibyte CStringA,
+        // append the type of string to it, and display the result.
+        CStringA cstringa(orig);
+        cstringa += " (CStringA)";
+        cout << cstringa << endl;
+
+        // Convert a wide character wchar_t string to a wide
+        // character CStringW string and append the type of string to it
+        CStringW cstring(orig);
+        cstring += " (CStringW)";
+        // To display a CStringW correctly, use wcout and cast cstring
+        // to (LPCTSTR).
+        wcout << (LPCTSTR)cstring << endl;
+
+        // Convert the wide character wchar_t string to a
+        // basic_string, append the type of string to it, and
+        // display the result.
+        wstring basicstring(orig);
+        basicstring += _T(" (basic_string)");
+        wcout << basicstring << endl;
+
+        // Convert a wide character wchar_t string to a
+        // System::String string, append the type of string to it,
+        // and display the result.
+        String ^systemstring = gcnew String(orig);
+        systemstring += " (System::String)";
+        Console::WriteLine("{0}", systemstring);
+        delete systemstring;
+    }
+    ```
+
+  - 从`basic_string`
+
+    ```cpp
+    // convert_from_basic_string.cpp
+    // compile with: /clr /link comsuppw.lib
+
+    #include <iostream>
+    #include <stdlib.h>
+    #include <string>
+
+    #include "atlbase.h"
+    #include "atlstr.h"
+    #include "comutil.h"
+
+    using namespace std;
+    using namespace System;
+
+    int main()
+    {
+        // Set up a basic_string string.
+        string orig("Hello, World!");
+        cout << orig << " (basic_string)" << endl;
+
+        // Convert a wide character basic_string string to a multibyte char*
+        // string. To be safe, we allocate two bytes for each character
+        // in the original string, including the terminating null.
+        const size_t newsize = (strlen(orig.c_str()) + 1)*2;
+        char *nstring = new char[newsize];
+        strcpy_s(nstring, newsize, orig.c_str());
+        cout << nstring << " (char *)" << endl;
+
+        // Convert a basic_string string to a wide character
+        // wchar_t* string. You must first convert to a char*
+        // for this to work.
+        const size_t newsizew = strlen(orig.c_str()) + 1;
+        size_t convertedChars = 0;
+        wchar_t *wcstring = new wchar_t[newsizew];
+        mbstowcs_s(&convertedChars, wcstring, newsizew, orig.c_str(), _TRUNCATE);
+        wcout << wcstring << _T(" (wchar_t *)") << endl;
+
+        // Convert a basic_string string to a wide character
+        // _bstr_t string.
+        _bstr_t bstrt(orig.c_str());
+        bstrt += _T(" (_bstr_t)");
+        wcout << bstrt << endl;
+
+        // Convert a basic_string string to a wide character
+        // CComBSTR string.
+        CComBSTR ccombstr(orig.c_str());
+        if (ccombstr.Append(_T(" (CComBSTR)")) == S_OK)
+        {
+            // Make a multibyte version of the CComBSTR string
+            // and display the result.
+            CW2A printstr(ccombstr);
+            cout << printstr << endl;
+        }
+
+        // Convert a basic_string string into a multibyte
+        // CStringA string.
+        CStringA cstring(orig.c_str());
+        cstring += " (CStringA)";
+        cout << cstring << endl;
+
+        // Convert a basic_string string into a wide
+        // character CStringW string.
+        CStringW cstringw(orig.c_str());
+        cstringw += _T(" (CStringW)");
+        wcout << (LPCTSTR)cstringw << endl;
+
+        // Convert a basic_string string to a System::String
+        String ^systemstring = gcnew String(orig.c_str());
+        systemstring += " (System::String)";
+        Console::WriteLine("{0}", systemstring);
+        delete systemstring;
+    }
+    ```
+
+  摘自：<https://docs.microsoft.com/en-us/cpp/text/how-to-convert-between-various-string-types>
+
+- 如何监听用户是否按下了键盘上的音量+/-，静音，打印，播放，暂停等功能键？
+
+  在`WndProc`中监听`WM_APPCOMMAND`这个消息，使用`GET_APPCOMMAND_LPARAM(lParam)`获取触发消息的类型，使用`GET_DEVICE_LPARAM(lParam)`获取触发该消息的设备，使用`GET_KEYSTATE_LPARAM(lParam)`获取触发该消息的按键。
+
+  参考：<https://docs.microsoft.com/en-us/windows/win32/inputdev/wm-appcommand>
+- Windows 官方支持周期
+
+  | 操作系统 | 支持开始日期 | 主流支持结束日期 | 延长支持结束日期 | 是否已经停止支持 |
+  | ------- | ---------- | -------------- | -------------- | ------------- |
+  | Windows 7 | 10/22/2009 | 01/13/2015 | 01/14/2020 | **是** |
+  | Windows 8 | 10/30/2012 | - | 01/12/2016 | **是** |
+  | Windows 8.1 | 11/13/2013 | 01/09/2018 | 01/10/2023 | 否（延长支持阶段） |
+  | Windows 10 **Home and Pro** 1507 | 07/29/2015 | 05/09/2017 | - | - |
+  | Windows 10 Home and Pro 1511 | 11/10/2015 | 10/10/2017 | - | - |
+  | Windows 10 Home and Pro 1607 | 08/02/2016 | 04/10/2018 | - | - |
+  | Windows 10 Home and Pro 1703 | 04/05/2017 | 10/09/2018 | - | - |
+  | Windows 10 Home and Pro 1709 | 10/17/2017 | 04/09/2019 | - | - |
+  | Windows 10 Home and Pro 1803 | 04/30/2018 | 11/12/2019 | - | - |
+  | Windows 10 Home and Pro 1809 | 11/13/2018 | 11/10/2020 | - | - |
+  | Windows 10 Home and Pro 1903 | 05/21/2019 | 12/08/2020 | - | - |
+  | Windows 10 Home and Pro 1909 | 11/12/2019 | 05/11/2021 | - | - |
+  | Windows 10 Home and Pro 2004 | 05/27/2020 | 12/14/2021 | - | - |
+  | Windows 10 Home and Pro 20H2 | 10/20/2020 | 05/10/2022 | - | - |
+  | Windows 10 **Enterprise and Education** 1507 | 07/29/2015 | 05/09/2017 | - | - |
+  | Windows 10 Enterprise and Education 1511 | 11/10/2015 | 10/10/2017 | - | - |
+  | Windows 10 Enterprise and Education 1607 | 08/02/2016 | 04/09/2019 | - | - |
+  | Windows 10 Enterprise and Education 1703 | 04/11/2017 | 10/08/2019 | - | - |
+  | Windows 10 Enterprise and Education 1709 | 10/17/2017 | 10/13/2020 | - | - |
+  | Windows 10 Enterprise and Education 1803 | 04/30/2018 | 05/11/2021 | - | - |
+  | Windows 10 Enterprise and Education 1809 | 11/13/2018 | 05/11/2021 | - | - |
+  | Windows 10 Enterprise and Education 1903 | 05/21/2019 | 12/08/2020 | - | - |
+  | Windows 10 Enterprise and Education 1909 | 11/12/2019 | 05/10/2022 | - | - |
+  | Windows 10 Enterprise and Education 2004 | 05/27/2020 | 12/14/2021 | - | - |
+  | Windows 10 Enterprise and Education 20H2 | 10/20/2020 | 05/09/2023 | - | - |
+
+  注意：
+  - 购买Extended Security Updates (ESU)可以延长三年支持周期，最多可以购买三个ESU，也就是最多延长九年支持。此类支持周期没有在上表中列出。
+  - 参考链接：<https://docs.microsoft.com/en-us/lifecycle/products/windows-7>、<https://docs.microsoft.com/en-us/lifecycle/products/windows-8>、<https://docs.microsoft.com/en-us/lifecycle/products/windows-81>、<https://docs.microsoft.com/en-us/lifecycle/products/windows-10-home-and-pro>、<https://docs.microsoft.com/en-us/lifecycle/products/windows-10-enterprise-and-education>
+
+- 判断系统此刻是否联网（这里是指真正的联网，连了一个没网的网络是不行的）：
+
+  ```cpp
+  #include <netlistmgr.h>
+  bool Utilities::isInternetAvailable()
+  {
+      if (FAILED(CoInitialize(nullptr))) {
+          return false;
+      }
+      bool result = false;
+      IUnknown *pUnknown = nullptr;
+      if (SUCCEEDED(CoCreateInstance(CLSID_NetworkListManager, nullptr, CLSCTX_ALL, IID_IUnknown, reinterpret_cast<void **>(&pUnknown)))) {
+          INetworkListManager *pNetworkListManager = nullptr;
+          if (SUCCEEDED(pUnknown->QueryInterface(IID_INetworkListManager, reinterpret_cast<void **>(&pNetworkListManager)))) {
+              VARIANT_BOOL isConnected = VARIANT_FALSE;
+              if (SUCCEEDED(pNetworkListManager->get_IsConnectedToInternet(&isConnected))) {
+                  result = isConnected == VARIANT_TRUE;
+  #if 0
+                  NLM_CONNECTIVITY connectivity = NLM_CONNECTIVITY_DISCONNECTED;
+                  if (SUCCEEDED(pNetworkListManager->GetConnectivity(&connectivity))) {
+                      // 此时的“connectivity”指示了此刻互联网连接的状态，具体清查看枚举的定义
+                  }
+  #endif
+              }
+              pNetworkListManager->Release();
+          }
+          pUnknown->Release();
+      }
+      CoUninitialize();
+      return result;
+  }
+  ```
